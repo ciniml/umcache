@@ -41,7 +41,6 @@ struct EventFd
 };
 
 UserModeCache::UserModeCache(std::size_t cache_size, void* backend, std::size_t backend_size)
-    : cache(nullptr, &::free)
 {
     this->page_size = getpagesize();
     assert(cache_size > 0);
@@ -90,10 +89,6 @@ UserModeCache::UserModeCache(std::size_t cache_size, void* backend, std::size_t 
     this->tags.resize(number_of_lines);
     std::fill(this->tags.begin(), this->tags.end(), 0);
 
-    void* cache_ptr = nullptr;
-    posix_memalign(&cache_ptr, this->page_size, cache_size);
-    
-    this->cache.reset(cache_ptr);
     this->backend = backend;
     this->backend_size = backend_size;
 
@@ -117,6 +112,9 @@ UserModeCache::~UserModeCache()
 
 void UserModeCache::fault_handler()
 {
+    void* page_buffer = nullptr;
+    posix_memalign(&page_buffer, this->page_size, this->page_size);
+
     const auto page_align_mask = ~(this->page_size-1);
     const auto tag_shift = this->tag_shift;
     const auto page_shift = bits(this->page_size);
@@ -124,7 +122,6 @@ void UserModeCache::fault_handler()
     const auto index_mask = (this->cache_size - 1) >> index_shift;
     const auto frontend_ptr = reinterpret_cast<std::uintptr_t>(this->frontend);
     const auto backend_ptr = reinterpret_cast<std::uint8_t*>(this->backend);
-    const auto cache_ptr = reinterpret_cast<std::uint8_t*>(this->cache.get());
     for(;;) {
         pollfd pollfd[] = {
             {
@@ -167,13 +164,13 @@ void UserModeCache::fault_handler()
         auto index_offset = (tag_index << page_shift);
         auto tag = this->tags[tag_index];
 
-        std::printf("PAGEFAULT: %lx\n", target_address);
+        std::printf("PAGEFAULT: %llx\n", target_address);
         if( tag & TAG_USED ) {
             // Flush this cache line.
             auto address = ((tag & TAG_MASK) << index_shift) | index_offset;
-            std::printf("FLUSH: %p<-%p\n", backend_ptr + address, cache_ptr + index_offset);
-            std::memcpy(backend_ptr + address, cache_ptr + index_offset, page_size);
-            std::printf("REMAP: %p\n", frontend_ptr + address);
+            std::printf("FLUSH: %p<-%llx\n", backend_ptr + address, frontend_ptr + address);
+            std::memcpy(backend_ptr + address, reinterpret_cast<void*>(frontend_ptr + address), page_size);
+            std::printf("REMAP: %llx\n", frontend_ptr + address);
             if( munmap(reinterpret_cast<void*>(frontend_ptr + address), page_size) == -1 ) {
                 std::printf("munmap error - %d(%s)\n", errno, strerror(errno));
             }
@@ -192,18 +189,18 @@ void UserModeCache::fault_handler()
             }
         }
         // Fill this cache line.
-        std::printf("FILL: %p<-%p\n", cache_ptr + index_offset, backend_ptr + offset_aligned);
-        std::memcpy(cache_ptr + index_offset, backend_ptr + offset_aligned, page_size);
+        std::printf("FILL: %p<-%p\n", page_buffer, backend_ptr + offset_aligned);
+        std::memcpy(page_buffer, backend_ptr + offset_aligned, page_size);
         this->tags[tag_index] = TAG_USED | (offset_aligned >> index_shift);
         uffdio_copy uffdio_copy = {
             .dst = target_address,
-            .src = reinterpret_cast<std::uintptr_t>(cache_ptr + index_offset),
+            .src = reinterpret_cast<std::uintptr_t>(page_buffer),
             .len = page_size,
             .mode = 0,
             .copy = 0,
         };
         if( ioctl(this->uffd, UFFDIO_COPY, &uffdio_copy) == -1 ) {
-            std::printf("UFFDIO_COPY error - %d(%s)\n", -uffdio_copy.copy, strerror(-uffdio_copy.copy));
+            std::printf("UFFDIO_COPY error - %lld(%s)\n", -uffdio_copy.copy, strerror(-uffdio_copy.copy));
         }
     }
 }

@@ -22,7 +22,6 @@ private:
     std::size_t backend_size = 0;
     std::unique_ptr<std::thread> handler_thread;
     std::vector<std::size_t> tags;
-    std::unique_ptr<void, decltype(&::free)> cache;
 
     void fault_handler();
 public:
