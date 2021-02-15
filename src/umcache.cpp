@@ -45,10 +45,9 @@ UserModeCache::UserModeCache(std::size_t cache_size, void* backend, std::size_t 
     this->page_size = getpagesize();
     assert(cache_size > 0);
     assert((cache_size % this->page_size) == 0);
-    assert(backend_size > cache_size);
+    assert(backend_size >= cache_size);
     assert((backend_size % this->page_size) == 0);
     assert(backend != nullptr);
-    assert((reinterpret_cast<std::uintptr_t>(backend) % this->page_size) == 0);
 
     this->shutdown_event = std::make_unique<EventFd>();
 
@@ -97,11 +96,8 @@ UserModeCache::UserModeCache(std::size_t cache_size, void* backend, std::size_t 
 
 UserModeCache::~UserModeCache()
 {
-    std::printf("Begin shutdown\n");
-
     if( this->handler_thread && this->handler_thread->joinable() ) {
         this->shutdown_event->put();
-        std::printf("Wait thread\n");
         this->handler_thread->join();
     }
     if( this->uffd >= 0 ) {
@@ -116,12 +112,14 @@ void UserModeCache::fault_handler()
     posix_memalign(&page_buffer, this->page_size, this->page_size);
 
     const auto page_align_mask = ~(this->page_size-1);
-    const auto tag_shift = this->tag_shift;
-    const auto page_shift = bits(this->page_size);
-    const auto index_shift = bits(this->cache_size/this->page_size);
-    const auto index_mask = (this->cache_size - 1) >> index_shift;
+    const auto page_shift = bits(this->page_size) - 1;
+    const auto index_mask = (this->cache_size - 1) >> page_shift;
     const auto frontend_ptr = reinterpret_cast<std::uintptr_t>(this->frontend);
     const auto backend_ptr = reinterpret_cast<std::uint8_t*>(this->backend);
+
+    printf("page_align_mask: %llx\n", page_align_mask);
+    printf("page_shift:      %d\n", page_shift);
+    printf("index_mask:      %llx\n", index_mask);
     for(;;) {
         pollfd pollfd[] = {
             {
@@ -133,14 +131,13 @@ void UserModeCache::fault_handler()
                 .events = POLLIN,
             },
         };
-        std::printf("WAIT\n");
+        //std::printf("WAIT\n");
         auto nready = poll(pollfd, 2, -1);
         if( nready == -1 ) {
             continue;
         }
-        std::printf("REVENTS: %x, %x\n", pollfd[0].revents, pollfd[1].revents);
+        //std::printf("REVENTS: %x, %x\n", pollfd[0].revents, pollfd[1].revents);
         if( pollfd[1].revents != 0 ) {
-            std::printf("SHUTDOWN\n");
             // Shutdown request
             break;
         }
@@ -159,15 +156,13 @@ void UserModeCache::fault_handler()
 
         auto target_address = msg.arg.pagefault.address & page_align_mask;
         auto offset = target_address - frontend_ptr;
-        auto offset_aligned = offset & page_align_mask;
-        auto tag_index = (offset_aligned >> index_shift) & index_mask;
-        auto index_offset = (tag_index << page_shift);
+        auto tag_index = (offset >> page_shift) & index_mask;
         auto tag = this->tags[tag_index];
 
-        std::printf("PAGEFAULT: %llx\n", target_address);
+        std::printf("PAGEFAULT: %llx, offset=%llx, tag_index=%llx\n", target_address, offset, tag_index);
         if( tag & TAG_USED ) {
             // Flush this cache line.
-            auto address = ((tag & TAG_MASK) << index_shift) | index_offset;
+            auto address = (tag & TAG_MASK) << page_shift;
             std::printf("FLUSH: %p<-%llx\n", backend_ptr + address, frontend_ptr + address);
             std::memcpy(backend_ptr + address, reinterpret_cast<void*>(frontend_ptr + address), page_size);
             std::printf("REMAP: %llx\n", frontend_ptr + address);
@@ -189,9 +184,9 @@ void UserModeCache::fault_handler()
             }
         }
         // Fill this cache line.
-        std::printf("FILL: %p<-%p\n", page_buffer, backend_ptr + offset_aligned);
-        std::memcpy(page_buffer, backend_ptr + offset_aligned, page_size);
-        this->tags[tag_index] = TAG_USED | (offset_aligned >> index_shift);
+        std::printf("FILL: %p<-%p\n", target_address, backend_ptr + offset);
+        std::memcpy(page_buffer, backend_ptr + offset, page_size);
+        this->tags[tag_index] = TAG_USED | (offset >> page_shift);
         uffdio_copy uffdio_copy = {
             .dst = target_address,
             .src = reinterpret_cast<std::uintptr_t>(page_buffer),

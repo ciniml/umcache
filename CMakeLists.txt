@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(warp_affine)
+project(userfaultfd)
 
 add_subdirectory(test/googletest)
 
