@@ -1,3 +1,8 @@
+/**
+ * User mode cache using userfaultfd.
+ * Copyright(C) 2021 Kenta IDA
+ * SPDX: BSL-1.0
+ */
 #pragma once
 #include <cstdint>
 #include <cmath>

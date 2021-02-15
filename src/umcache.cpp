@@ -1,3 +1,8 @@
+/**
+ * User mode cache using userfaultfd.
+ * Copyright(C) 2021 Kenta IDA
+ * SPDX: BSL-1.0
+ */
 #include "umcache.hpp"
 #include "utility.hpp"
 
@@ -117,9 +122,9 @@ void UserModeCache::fault_handler()
     const auto frontend_ptr = reinterpret_cast<std::uintptr_t>(this->frontend);
     const auto backend_ptr = reinterpret_cast<std::uint8_t*>(this->backend);
 
-    printf("page_align_mask: %llx\n", page_align_mask);
-    printf("page_shift:      %d\n", page_shift);
-    printf("index_mask:      %llx\n", index_mask);
+    //printf("page_align_mask: %llx\n", page_align_mask);
+    //printf("page_shift:      %d\n", page_shift);
+    //printf("index_mask:      %llx\n", index_mask);
     for(;;) {
         pollfd pollfd[] = {
             {
@@ -159,13 +164,13 @@ void UserModeCache::fault_handler()
         auto tag_index = (offset >> page_shift) & index_mask;
         auto tag = this->tags[tag_index];
 
-        std::printf("PAGEFAULT: %llx, offset=%llx, tag_index=%llx\n", target_address, offset, tag_index);
+        //std::printf("PAGEFAULT: %llx, offset=%llx, tag_index=%llx\n", target_address, offset, tag_index);
         if( tag & TAG_USED ) {
             // Flush this cache line.
             auto address = (tag & TAG_MASK) << page_shift;
-            std::printf("FLUSH: %p<-%llx\n", backend_ptr + address, frontend_ptr + address);
+            //std::printf("FLUSH: %p<-%llx\n", backend_ptr + address, frontend_ptr + address);
             std::memcpy(backend_ptr + address, reinterpret_cast<void*>(frontend_ptr + address), page_size);
-            std::printf("REMAP: %llx\n", frontend_ptr + address);
+            //std::printf("REMAP: %llx\n", frontend_ptr + address);
             if( munmap(reinterpret_cast<void*>(frontend_ptr + address), page_size) == -1 ) {
                 std::printf("munmap error - %d(%s)\n", errno, strerror(errno));
             }
@@ -184,7 +189,7 @@ void UserModeCache::fault_handler()
             }
         }
         // Fill this cache line.
-        std::printf("FILL: %p<-%p\n", target_address, backend_ptr + offset);
+        //std::printf("FILL: %p<-%p\n", target_address, backend_ptr + offset);
         std::memcpy(page_buffer, backend_ptr + offset, page_size);
         this->tags[tag_index] = TAG_USED | (offset >> page_shift);
         uffdio_copy uffdio_copy = {
